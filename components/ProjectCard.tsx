@@ -1,68 +1,92 @@
+// components/ProjectCard.tsx - Versión actualizada
 import { Project } from '../types'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { Edit, Trash2, Users, Folder } from 'lucide-react'
 import { Badge } from "@/components/ui/badge"
-import { Edit, Trash2, Calendar, User } from 'lucide-react'
 
 interface ProjectCardProps {
   project: Project
   onEdit: (project: Project) => void
   onDelete: (projectId: string) => void
+  onShare: (project: Project) => void
+  canEdit?: boolean
+  canDelete?: boolean
+  canShare?: boolean
 }
 
-export default function ProjectCard({ project, onEdit, onDelete }: ProjectCardProps) {
+export default function ProjectCard({ 
+  project, 
+  onEdit, 
+  onDelete, 
+  onShare,
+  canEdit = true,
+  canDelete = true,
+  canShare = true
+}: ProjectCardProps) {
+  const isOwner = canEdit && canDelete && canShare
+
   return (
-    <Card className="hover:shadow-lg transition-all duration-300 border-purple-100">
+    <Card className="hover:shadow-lg transition-shadow border-l-4 border-l-purple-500">
       <CardHeader className="pb-3">
-        <div className="flex justify-between items-start">
-          <div className="flex-1 min-w-0">
-            <CardTitle className="text-lg font-semibold text-gray-900 truncate">
-              {project.name}
-            </CardTitle>
-            <CardDescription className="mt-1 line-clamp-2">
-              {project.description || 'Sin descripción'}
-            </CardDescription>
+        <CardTitle className="flex items-center justify-between text-lg">
+          <div className="flex items-center space-x-2">
+            <Folder className="h-5 w-5 text-purple-500" />
+            <span className="truncate">{project.name}</span>
           </div>
-          <div className="flex space-x-1 ml-2 flex-shrink-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onEdit(project)}
-              className="h-8 w-8 p-0 text-gray-500 hover:text-purple-600"
-            >
-              <Edit className="h-4 w-4" />
-            </Button>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onDelete(project.id)}
-              className="h-8 w-8 p-0 text-gray-500 hover:text-red-600"
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="pt-0">
-        <div className="flex items-center justify-between text-sm text-gray-500">
-          <div className="flex items-center space-x-4">
-            <div className="flex items-center space-x-1">
-              <Calendar className="h-3 w-3" />
-              <span>
-                {new Date(project.created_at).toLocaleDateString('es-ES', {
-                  day: 'numeric',
-                  month: 'short',
-                  year: 'numeric'
-                })}
-              </span>
-            </div>
-            <Badge variant="secondary" className="bg-purple-50 text-purple-700 border-purple-200">
-              Activo
+          {!isOwner && (
+            <Badge variant="secondary" className="text-xs">
+              Compartido
             </Badge>
+          )}
+        </CardTitle>
+        <CardDescription className="line-clamp-2">
+          {project.description || 'Sin descripción'}
+        </CardDescription>
+      </CardHeader>
+      
+      <CardContent className="pt-0">
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-gray-500">
+            Creado: {new Date(project.created_at).toLocaleDateString()}
           </div>
+          
           <div className="flex items-center space-x-1">
-            <User className="h-3 w-3" />
-            <span>0 tareas</span>
+            {canShare && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onShare(project)}
+                className="h-8 w-8 p-0 text-blue-600 hover:text-blue-800 hover:bg-blue-50"
+                title="Compartir proyecto"
+              >
+                <Users className="h-4 w-4" />
+              </Button>
+            )}
+            
+            {canEdit && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onEdit(project)}
+                className="h-8 w-8 p-0 text-gray-600 hover:text-gray-800 hover:bg-gray-50"
+                title="Editar proyecto"
+              >
+                <Edit className="h-4 w-4" />
+              </Button>
+            )}
+            
+            {canDelete && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onDelete(project.id)}
+                className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
+                title="Eliminar proyecto"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            )}
           </div>
         </div>
       </CardContent>

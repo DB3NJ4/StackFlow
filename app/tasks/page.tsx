@@ -4,13 +4,16 @@ import { supabase } from '../../lib/supabase'
 import { useRouter } from 'next/navigation'
 import { DashboardSidebar } from '../../components/DashboardSidebar'
 import { KanbanBoard } from '../../components/KanbanBoard'
+import { IssuesList } from '../../components/IssuesList'
 import { CreateIssueDialog } from '../../components/CreateIssueDialog'
-import { Issue, User, Project } from '../../types'
-import { Button } from "@/components/ui/button"
+import { Issue, User, Project, IssueStatus, IssuePriority } from '../../types'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Plus, Search, Filter, LayoutGrid, List, Folder } from 'lucide-react'
+import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
+import { Label } from "@/components/ui/label"
+import { Button } from "@/components/ui/button"
+import { Plus, Search, Filter, LayoutGrid, List, Folder, X } from 'lucide-react'
 
 export default function TasksPage() {
   const [user, setUser] = useState<User | null>(null)
@@ -18,9 +21,12 @@ export default function TasksPage() {
   const [projects, setProjects] = useState<Project[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState('')
-  const [selectedProject, setSelectedProject] = useState<string>('all') // ✅ Nuevo estado
+  const [selectedProject, setSelectedProject] = useState<string>('all')
+  const [selectedStatus, setSelectedStatus] = useState<string>('all')
+  const [selectedPriority, setSelectedPriority] = useState<string>('all')
   const [viewMode, setViewMode] = useState<'kanban' | 'list'>('kanban')
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
+  const [showFilters, setShowFilters] = useState(false)
   const router = useRouter()
 
   useEffect(() => {
@@ -40,7 +46,15 @@ export default function TasksPage() {
   const fetchData = async () => {
     try {
       console.log('🔄 Cargando datos...')
+      const { data: { user } } = await supabase.auth.getUser()
       
+      if (!user) {
+        router.push('/')
+        return
+      }
+
+      console.log('👤 Usuario actual:', user.id)
+
       const [issuesResponse, projectsResponse] = await Promise.all([
         supabase
           .from('issues')
@@ -65,9 +79,26 @@ export default function TasksPage() {
         throw projectsResponse.error
       }
 
-      setIssues(issuesResponse.data || [])
+      // ✅ FILTRAR ISSUES VÁLIDOS
+      const validIssues = (issuesResponse.data || []).filter(issue => 
+        issue && 
+        typeof issue === 'object' && 
+        issue.id && 
+        issue.title && 
+        typeof issue.title === 'string'
+      )
+
+      // Log para debugging de permisos
+      console.log(`📈 Estadísticas de carga:`, {
+        issuesTotales: issuesResponse.data?.length || 0,
+        issuesValidos: validIssues.length,
+        proyectos: projectsResponse.data?.length || 0,
+        usuario: user.id
+      })
+
+      setIssues(validIssues)
       setProjects(projectsResponse.data || [])
-      console.log(`✅ Datos cargados: ${issuesResponse.data?.length || 0} issues, ${projectsResponse.data?.length || 0} proyectos`)
+      console.log(`✅ Datos cargados: ${validIssues.length} issues, ${projectsResponse.data?.length || 0} proyectos`)
       
     } catch (error) {
       console.error('💥 Error cargando datos:', error)
@@ -79,13 +110,29 @@ export default function TasksPage() {
 
   const handleIssueCreate = async (issueData: any) => {
     const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
+    if (!user) {
+      alert('Usuario no autenticado')
+      return
+    }
 
     console.log('📝 Creando tarea con datos:', issueData)
+    console.log('👤 Usuario creador:', user.id)
 
     // Validar que tenemos los datos mínimos requeridos
     if (!issueData.title || !issueData.project_id) {
       alert('El título y el proyecto son requeridos')
+      return
+    }
+
+    // Verificar que el usuario puede crear issues en este proyecto
+    const targetProject = projects.find(p => p.id === issueData.project_id)
+    if (!targetProject) {
+      alert('Proyecto no encontrado')
+      return
+    }
+
+    if (targetProject.created_by !== user.id) {
+      alert('No tienes permisos para crear tareas en este proyecto')
       return
     }
 
@@ -105,9 +152,14 @@ export default function TasksPage() {
       if (error) {
         console.error('❌ Error creando tarea:', error)
         alert(`Error al crear la tarea: ${error.message}`)
-      } else if (data) {
+      } else if (data && data[0]) {
         console.log('✅ Tarea creada exitosamente:', data[0])
-        setIssues([data[0], ...issues])
+        setIssues(prevIssues => {
+          const validPrevIssues = prevIssues.filter(issue => 
+            issue && typeof issue === 'object' && issue.id
+          )
+          return [data[0], ...validPrevIssues]
+        })
         setCreateDialogOpen(false)
       }
     } catch (error) {
@@ -117,54 +169,205 @@ export default function TasksPage() {
   }
 
   const handleIssueUpdate = async (issueId: string, updates: any) => {
-    const { data, error } = await supabase
-      .from('issues')
-      .update(updates)
-      .eq('id', issueId)
-      .select()
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) {
+        console.error('❌ Usuario no autenticado')
+        return
+      }
 
-    if (error) {
-      console.error('Error updating issue:', error)
-      alert('Error al actualizar la tarea')
-    } else {
-      setIssues(issues.map(issue => issue.id === issueId ? data[0] : issue))
+      console.log('🔄 Actualizando tarea:', issueId, updates)
+      console.log('👤 Usuario:', user.id)
+
+      // Verificar que el issue existe y tenemos permisos
+      const issueToUpdate = issues.find(issue => issue.id === issueId)
+      if (!issueToUpdate) {
+        console.error('❌ Tarea no encontrada:', issueId)
+        alert('Tarea no encontrada')
+        return
+      }
+
+      console.log('🔍 Tarea a actualizar:', {
+        id: issueToUpdate.id,
+        title: issueToUpdate.title,
+        created_by: issueToUpdate.created_by,
+        assigned_to: issueToUpdate.assigned_to,
+        project_id: issueToUpdate.project_id
+      })
+
+      // Verificar permisos según tus políticas RLS
+      const userCanUpdate = 
+        issueToUpdate.created_by === user.id ||
+        issueToUpdate.assigned_to === user.id ||
+        projects.some(project => 
+          project.id === issueToUpdate.project_id && 
+          project.created_by === user.id
+        )
+
+      if (!userCanUpdate) {
+        console.error('🚫 Sin permisos para actualizar:', {
+          usuario: user.id,
+          creador: issueToUpdate.created_by,
+          asignado: issueToUpdate.assigned_to,
+          proyecto: issueToUpdate.project_id
+        })
+        alert('No tienes permisos para actualizar esta tarea')
+        return
+      }
+
+      console.log('✅ Permisos verificados - Procediendo con actualización')
+
+      // 1. Actualizar estado local inmediatamente (mejor UX)
+      setIssues(prevIssues => {
+        const validIssues = prevIssues.filter(issue => 
+          issue && typeof issue === 'object' && issue.id
+        )
+        
+        return validIssues.map(issue => {
+          if (!issue || !issue.id) return issue
+          if (issue.id === issueId) {
+            return { 
+              ...issue, 
+              ...updates, 
+              updated_at: new Date().toISOString() 
+            }
+          }
+          return issue
+        })
+      })
+
+      console.log('✅ Estado local actualizado')
+
+      // 2. Actualizar en Supabase
+      const { data, error } = await supabase
+        .from('issues')
+        .update(updates)
+        .eq('id', issueId)
+        .select('*')
+
+      if (error) {
+        console.error('❌ Error en Supabase:', error)
+        
+        // Revertir cambios locales si falla en Supabase
+        setIssues(prevIssues => {
+          const validIssues = prevIssues.filter(issue => 
+            issue && typeof issue === 'object' && issue.id
+          )
+          
+          return validIssues.map(issue => {
+            if (!issue || !issue.id) return issue
+            if (issue.id === issueId) {
+              return issueToUpdate // Volver al estado original
+            }
+            return issue
+          })
+        })
+        
+        alert(`Error al guardar en la base de datos: ${error.message}`)
+        return
+      }
+
+      if (data && data.length > 0) {
+        console.log('✅ Supabase retornó datos actualizados:', data[0])
+        
+        // Sincronizar con datos frescos de Supabase
+        setIssues(prevIssues => {
+          const validIssues = prevIssues.filter(issue => 
+            issue && typeof issue === 'object' && issue.id
+          )
+          
+          return validIssues.map(issue => {
+            if (!issue || !issue.id) return issue
+            return issue.id === issueId ? data[0] : issue
+          })
+        })
+      } else {
+        console.log('ℹ️ Supabase no retornó datos, pero la actualización fue exitosa')
+      }
+
+      console.log('🎉 Actualización completada exitosamente')
+      
+    } catch (error) {
+      console.error('💥 Error inesperado al actualizar:', error)
+      alert('Error inesperado al actualizar la tarea')
     }
   }
 
   const handleIssueDelete = async (issueId: string) => {
     if (!confirm('¿Estás seguro de que quieres eliminar esta tarea?')) return
 
-    const { error } = await supabase
-      .from('issues')
-      .delete()
-      .eq('id', issueId)
+    try {
+      const { error } = await supabase
+        .from('issues')
+        .delete()
+        .eq('id', issueId)
 
-    if (error) {
-      console.error('Error deleting issue:', error)
-      alert('Error al eliminar la tarea')
-    } else {
-      setIssues(issues.filter(issue => issue.id !== issueId))
+      if (error) {
+        console.error('❌ Error eliminando tarea:', error)
+        alert('Error al eliminar la tarea')
+      } else {
+        setIssues(prevIssues => {
+          const validIssues = prevIssues.filter(issue => 
+            issue && typeof issue === 'object' && issue.id
+          )
+          return validIssues.filter(issue => issue.id !== issueId)
+        })
+        console.log('✅ Tarea eliminada exitosamente')
+      }
+    } catch (error) {
+      console.error('💥 Error inesperado al eliminar:', error)
+      alert('Error inesperado al eliminar la tarea')
     }
   }
 
-  // ✅ Filtrar tareas por proyecto y búsqueda
+  // ✅ FILTRAR TAREAS CON TODOS LOS FILTROS
   const filteredIssues = issues.filter(issue => {
+    if (!issue || typeof issue !== 'object' || !issue.title || typeof issue.title !== 'string') {
+      return false
+    }
+
     const matchesSearch = 
       issue.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      issue.description?.toLowerCase().includes(searchTerm.toLowerCase())
+      (issue.description && typeof issue.description === 'string' 
+        ? issue.description.toLowerCase().includes(searchTerm.toLowerCase())
+        : false)
     
     const matchesProject = 
       selectedProject === 'all' || 
       issue.project_id === selectedProject
+
+    const matchesStatus = 
+      selectedStatus === 'all' || 
+      issue.status === selectedStatus
+
+    const matchesPriority = 
+      selectedPriority === 'all' || 
+      issue.priority === selectedPriority
     
-    return matchesSearch && matchesProject
+    return matchesSearch && matchesProject && matchesStatus && matchesPriority
   })
 
-  // ✅ Obtener el proyecto seleccionado
+  // ✅ OBTENER EL PROYECTO SELECCIONADO
   const getSelectedProject = () => {
     if (selectedProject === 'all') return null
     return projects.find(project => project.id === selectedProject)
   }
+
+  // ✅ LIMPIAR FILTROS
+  const clearFilters = () => {
+    setSearchTerm('')
+    setSelectedProject('all')
+    setSelectedStatus('all')
+    setSelectedPriority('all')
+  }
+
+  // ✅ CONTAR FILTROS ACTIVOS
+  const activeFiltersCount = [
+    searchTerm ? 1 : 0,
+    selectedProject !== 'all' ? 1 : 0,
+    selectedStatus !== 'all' ? 1 : 0,
+    selectedPriority !== 'all' ? 1 : 0
+  ].reduce((a, b) => a + b, 0)
 
   const selectedProjectData = getSelectedProject()
 
@@ -190,12 +393,9 @@ export default function TasksPage() {
 
   return (
     <div className="flex h-screen bg-gray-50/50">
-      {/* Sidebar */}
       <DashboardSidebar user={user} />
       
-      {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
         <header className="bg-white border-b border-gray-200 px-6 py-4">
           <div className="flex items-center justify-between">
             <div>
@@ -203,16 +403,13 @@ export default function TasksPage() {
                 {selectedProjectData ? `Tareas - ${selectedProjectData.name}` : 'Tareas'}
               </h1>
               <p className="text-gray-600">
-                {selectedProjectData 
-                  ? `Gestionando tareas del proyecto ${selectedProjectData.name}`
-                  : 'Gestiona y organiza todas las tareas del equipo'
-                }
+                {user.email} • {projects.length} proyectos • {issues.length} tareas visibles
               </p>
             </div>
             <Button 
               onClick={() => setCreateDialogOpen(true)}
               className="bg-purple-600 hover:bg-purple-700"
-              disabled={projects.length === 0} // ✅ Deshabilitar si no hay proyectos
+              disabled={projects.length === 0}
             >
               <Plus className="h-4 w-4 mr-2" />
               Nueva Tarea
@@ -220,19 +417,14 @@ export default function TasksPage() {
           </div>
         </header>
 
-        {/* Main content area */}
         <main className="flex-1 overflow-auto p-6">
           <div className="max-w-7xl mx-auto space-y-6">
             {/* Stats and Controls */}
             <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-              {/* Stats */}
               <Card className="bg-purple-50 border-purple-200">
                 <CardContent className="p-4">
                   <div className="text-2xl font-bold text-purple-600">
-                    {selectedProject === 'all' 
-                      ? issues.length 
-                      : issues.filter(issue => issue.project_id === selectedProject).length
-                    }
+                    {selectedProject === 'all' ? issues.length : issues.filter(issue => issue.project_id === selectedProject).length}
                   </div>
                   <div className="text-sm text-purple-700">Total Tareas</div>
                 </CardContent>
@@ -272,7 +464,7 @@ export default function TasksPage() {
                     <Select value={selectedProject} onValueChange={setSelectedProject}>
                       <SelectTrigger className="focus:ring-purple-500">
                         <Folder className="h-4 w-4 mr-2" />
-                        <SelectValue placeholder="Seleccionar proyecto" />
+                        <SelectValue placeholder="Todos los proyectos" />
                       </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="all">Todos los proyectos</SelectItem>
@@ -322,11 +514,64 @@ export default function TasksPage() {
                     </Button>
                   </div>
 
-                  <Button variant="outline" className="border-gray-300">
+                  <Button 
+                    variant="outline" 
+                    className="border-gray-300 relative"
+                    onClick={() => setShowFilters(!showFilters)}
+                  >
                     <Filter className="h-4 w-4 mr-2" />
                     Filtros
+                    {activeFiltersCount > 0 && (
+                      <Badge variant="secondary" className="ml-2 bg-purple-600 text-white">
+                        {activeFiltersCount}
+                      </Badge>
+                    )}
                   </Button>
+
+                  {activeFiltersCount > 0 && (
+                    <Button variant="ghost" size="sm" onClick={clearFilters}>
+                      <X className="h-4 w-4 mr-1" />
+                      Limpiar
+                    </Button>
+                  )}
                 </div>
+
+                {/* Filtros expandibles */}
+                {showFilters && (
+                  <div className="mt-4 pt-4 border-t border-gray-200 grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Estado</Label>
+                      <Select value={selectedStatus} onValueChange={setSelectedStatus}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Todos los estados" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Todos los estados</SelectItem>
+                          <SelectItem value="todo">Por Hacer</SelectItem>
+                          <SelectItem value="in_progress">En Progreso</SelectItem>
+                          <SelectItem value="review">En Revisión</SelectItem>
+                          <SelectItem value="done">Completado</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="text-sm font-medium">Prioridad</Label>
+                      <Select value={selectedPriority} onValueChange={setSelectedPriority}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Todas las prioridades" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Todas las prioridades</SelectItem>
+                          <SelectItem value="low">Baja</SelectItem>
+                          <SelectItem value="medium">Media</SelectItem>
+                          <SelectItem value="high">Alta</SelectItem>
+                          <SelectItem value="critical">Crítica</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -336,7 +581,7 @@ export default function TasksPage() {
               onOpenChange={setCreateDialogOpen}
               projects={projects}
               defaultStatus="todo"
-              defaultProjectId={selectedProject !== 'all' ? selectedProject : undefined} // ✅ Proyecto por defecto
+              defaultProjectId={selectedProject !== 'all' ? selectedProject : undefined}
               onSubmit={handleIssueCreate}
             />
 
@@ -346,22 +591,26 @@ export default function TasksPage() {
                 <CardContent>
                   <div className="text-6xl mb-4">📋</div>
                   <CardTitle className="text-lg font-semibold text-gray-900 mb-2">
-                    {searchTerm 
-                      ? 'No se encontraron tareas' 
+                    {searchTerm || selectedProject !== 'all' || selectedStatus !== 'all' || selectedPriority !== 'all'
+                      ? 'No se encontraron tareas con los filtros aplicados' 
                       : selectedProjectData
                         ? `No hay tareas en ${selectedProjectData.name}`
                         : 'No hay tareas creadas'
                     }
                   </CardTitle>
                   <CardDescription className="mb-6">
-                    {searchTerm 
-                      ? 'Intenta con otros términos de búsqueda' 
+                    {searchTerm || selectedProject !== 'all' || selectedStatus !== 'all' || selectedPriority !== 'all'
+                      ? 'Intenta ajustar los filtros de búsqueda' 
                       : selectedProjectData
                         ? `Comienza creando la primera tarea para el proyecto ${selectedProjectData.name}`
                         : 'Comienza creando tu primera tarea para organizar el trabajo'
                     }
                   </CardDescription>
-                  {!searchTerm && (
+                  {(searchTerm || selectedProject !== 'all' || selectedStatus !== 'all' || selectedPriority !== 'all') ? (
+                    <Button onClick={clearFilters} variant="outline">
+                      Limpiar filtros
+                    </Button>
+                  ) : (
                     <Button 
                       onClick={() => setCreateDialogOpen(true)}
                       className="bg-purple-600 hover:bg-purple-700"
@@ -373,11 +622,18 @@ export default function TasksPage() {
                   )}
                 </CardContent>
               </Card>
-            ) : (
+            ) : viewMode === 'kanban' ? (
               <KanbanBoard
                 issues={filteredIssues}
                 projects={projects}
                 onIssueCreate={handleIssueCreate}
+                onIssueUpdate={handleIssueUpdate}
+                onIssueDelete={handleIssueDelete}
+              />
+            ) : (
+              <IssuesList
+                issues={filteredIssues}
+                projects={projects}
                 onIssueUpdate={handleIssueUpdate}
                 onIssueDelete={handleIssueDelete}
               />
